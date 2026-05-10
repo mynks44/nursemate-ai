@@ -50,3 +50,16 @@ class SleepRequest(BaseModel):
 
 class WaterRequest(BaseModel):
     glasses: int
+
+
+class AccountabilityRequest(BaseModel):
+    drank_water: str
+    studied: str
+    worked_out: str
+    mood: str
+    sleep: str
+    note: str = ""
+
+
+class WeeklyGoalRequest(BaseModel):
+    goal: str

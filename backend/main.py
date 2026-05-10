@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from groq import Groq
 from dotenv import load_dotenv
+from datetime import datetime
 import os
 
 from database import Base, engine, SessionLocal
@@ -16,7 +17,9 @@ from models import (
     SymptomLog,
     MoodLog,
     SleepLog,
-    WaterLog
+    WaterLog,
+    UserProfile,
+    AccountabilityLog
 )
 from schemas import (
     RegisterRequest,
@@ -29,23 +32,19 @@ from schemas import (
     SymptomRequest,
     MoodRequest,
     SleepRequest,
-    WaterRequest
+    WaterRequest,
+    AccountabilityRequest
 )
 from auth import hash_password, verify_password, create_token, verify_token
 
 
-# Load local .env file
 load_dotenv()
 
-# Create database tables
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="NurseMate AI Pro")
 
 
-# ✅ Correct CORS for Vercel + localhost
-# For now, this is fully open because your app uses token auth, not cookies.
-# This fixes: No Access-Control-Allow-Origin header.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -55,7 +54,6 @@ app.add_middleware(
 )
 
 
-# Groq setup
 api_key = os.getenv("GROQ_API_KEY")
 
 if api_key:
@@ -111,6 +109,191 @@ def get_current_user(
     return user
 
 
+def extract_section(text, start_label, end_label=None):
+    try:
+        start = text.index(start_label) + len(start_label)
+
+        if end_label:
+            end = text.index(end_label)
+            return text[start:end].strip()
+
+        return text[start:].strip()
+
+    except ValueError:
+        return ""
+
+
+def get_user_context(user: User, db: Session):
+    memories = db.query(Memory).filter(Memory.user_id == user.id).all()
+    gym_plans = db.query(GymPlan).filter(GymPlan.user_id == user.id).all()
+    study_plans = db.query(StudyPlan).filter(StudyPlan.user_id == user.id).all()
+    medications = db.query(MedicationReminder).filter(MedicationReminder.user_id == user.id).all()
+    symptoms = db.query(SymptomLog).filter(SymptomLog.user_id == user.id).all()
+    moods = db.query(MoodLog).filter(MoodLog.user_id == user.id).all()
+    sleeps = db.query(SleepLog).filter(SleepLog.user_id == user.id).all()
+    waters = db.query(WaterLog).filter(WaterLog.user_id == user.id).all()
+    accountability = db.query(AccountabilityLog).filter(AccountabilityLog.user_id == user.id).all()
+
+    context = ""
+
+    for item in memories:
+        context += f"Memory: {item.title} - {item.content}\n"
+
+    for item in gym_plans:
+        context += f"Gym Plan: {item.title}, Goal: {item.goal}, Plan: {item.plan}\n"
+
+    for item in study_plans:
+        context += f"Study Plan: {item.subject}, Goal: {item.goal}, Plan: {item.plan}\n"
+
+    for item in medications:
+        context += (
+            f"Medication: {item.medicine_name}, "
+            f"Dosage: {item.dosage}, "
+            f"Time: {item.reminder_time}, "
+            f"Note: {item.note}\n"
+        )
+
+    for item in symptoms:
+        context += (
+            f"Symptom: {item.symptom}, "
+            f"Severity: {item.severity}, "
+            f"Note: {item.note}, "
+            f"Date: {item.created_at}\n"
+        )
+
+    for item in moods:
+        context += (
+            f"Mood: {item.mood}, "
+            f"Energy: {item.energy_level}, "
+            f"Stress: {item.stress_level}, "
+            f"Note: {item.note}, "
+            f"Date: {item.created_at}\n"
+        )
+
+    for item in sleeps:
+        context += (
+            f"Sleep: {item.hours} hours, "
+            f"Quality: {item.quality}, "
+            f"Note: {item.note}, "
+            f"Date: {item.created_at}\n"
+        )
+
+    for item in waters:
+        context += f"Water: {item.glasses} glasses, Date: {item.created_at}\n"
+
+    for item in accountability:
+        context += (
+            f"Accountability: "
+            f"water={item.drank_water}, "
+            f"studied={item.studied}, "
+            f"worked_out={item.worked_out}, "
+            f"mood={item.mood}, "
+            f"sleep={item.sleep}, "
+            f"note={item.note}, "
+            f"date={item.created_at}\n"
+        )
+
+    return context
+
+
+def calculate_body_score(db: Session, user: User):
+    sleeps = (
+        db.query(SleepLog)
+        .filter(SleepLog.user_id == user.id)
+        .order_by(SleepLog.id.desc())
+        .limit(7)
+        .all()
+    )
+
+    waters = (
+        db.query(WaterLog)
+        .filter(WaterLog.user_id == user.id)
+        .order_by(WaterLog.id.desc())
+        .limit(7)
+        .all()
+    )
+
+    accountability = (
+        db.query(AccountabilityLog)
+        .filter(AccountabilityLog.user_id == user.id)
+        .order_by(AccountabilityLog.id.desc())
+        .limit(7)
+        .all()
+    )
+
+    score = 70
+
+    if sleeps:
+        avg_sleep = sum(s.hours for s in sleeps) / len(sleeps)
+
+        if avg_sleep >= 7:
+            score += 10
+        elif avg_sleep < 6:
+            score -= 15
+
+    if waters:
+        avg_water = sum(w.glasses for w in waters) / len(waters)
+
+        if avg_water >= 8:
+            score += 10
+        elif avg_water < 5:
+            score -= 10
+
+    workout_yes = [
+        a for a in accountability
+        if a.worked_out and a.worked_out.lower() in ["yes", "y", "done"]
+    ]
+
+    if len(workout_yes) >= 3:
+        score += 10
+
+    return max(0, min(100, score))
+
+
+def calculate_mind_score(db: Session, user: User):
+    moods = (
+        db.query(MoodLog)
+        .filter(MoodLog.user_id == user.id)
+        .order_by(MoodLog.id.desc())
+        .limit(7)
+        .all()
+    )
+
+    accountability = (
+        db.query(AccountabilityLog)
+        .filter(AccountabilityLog.user_id == user.id)
+        .order_by(AccountabilityLog.id.desc())
+        .limit(7)
+        .all()
+    )
+
+    score = 70
+
+    if moods:
+        avg_stress = sum(m.stress_level for m in moods) / len(moods)
+        avg_energy = sum(m.energy_level for m in moods) / len(moods)
+
+        if avg_stress >= 8:
+            score -= 20
+        elif avg_stress <= 4:
+            score += 10
+
+        if avg_energy >= 7:
+            score += 10
+        elif avg_energy <= 4:
+            score -= 10
+
+    studied_yes = [
+        a for a in accountability
+        if a.studied and a.studied.lower() in ["yes", "y", "done"]
+    ]
+
+    if len(studied_yes) >= 4:
+        score += 10
+
+    return max(0, min(100, score))
+
+
 @app.get("/")
 def home():
     return {"status": "NurseMate AI Pro running"}
@@ -119,7 +302,7 @@ def home():
 @app.get("/version")
 def version():
     return {
-        "version": "cors-fixed-v3",
+        "version": "ai-profile-command-center-patterns-v1",
         "cors": "enabled",
         "backend": "backend/main.py"
     }
@@ -199,67 +382,7 @@ def chat(
 
             return {"reply": emergency_reply}
 
-    memories = db.query(Memory).filter(Memory.user_id == user.id).all()
-    gym_plans = db.query(GymPlan).filter(GymPlan.user_id == user.id).all()
-    study_plans = db.query(StudyPlan).filter(StudyPlan.user_id == user.id).all()
-    medications = db.query(MedicationReminder).filter(MedicationReminder.user_id == user.id).all()
-
-    symptoms = (
-        db.query(SymptomLog)
-        .filter(SymptomLog.user_id == user.id)
-        .order_by(SymptomLog.id.desc())
-        .limit(5)
-        .all()
-    )
-
-    moods = (
-        db.query(MoodLog)
-        .filter(MoodLog.user_id == user.id)
-        .order_by(MoodLog.id.desc())
-        .limit(5)
-        .all()
-    )
-
-    sleeps = (
-        db.query(SleepLog)
-        .filter(SleepLog.user_id == user.id)
-        .order_by(SleepLog.id.desc())
-        .limit(5)
-        .all()
-    )
-
-    context = ""
-
-    for item in memories:
-        context += f"Memory - {item.title}: {item.content}\n"
-
-    for item in gym_plans:
-        context += f"Gym Plan - {item.title}, Goal: {item.goal}, Plan: {item.plan}\n"
-
-    for item in study_plans:
-        context += f"Study Plan - {item.subject}, Goal: {item.goal}, Plan: {item.plan}\n"
-
-    for item in medications:
-        context += (
-            f"Medication - {item.medicine_name}, "
-            f"Dosage: {item.dosage}, "
-            f"Time: {item.reminder_time}, "
-            f"Note: {item.note}\n"
-        )
-
-    for item in symptoms:
-        context += f"Recent Symptom - {item.symptom}, Severity: {item.severity}, Note: {item.note}\n"
-
-    for item in moods:
-        context += (
-            f"Recent Mood - {item.mood}, "
-            f"Energy: {item.energy_level}, "
-            f"Stress: {item.stress_level}, "
-            f"Note: {item.note}\n"
-        )
-
-    for item in sleeps:
-        context += f"Recent Sleep - {item.hours} hours, Quality: {item.quality}, Note: {item.note}\n"
+    context = get_user_context(user, db)
 
     db.add(ChatMessage(user_id=user.id, role="user", message=req.message))
     db.commit()
@@ -267,7 +390,6 @@ def chat(
     prompt = f"""
 You are NurseMate AI Pro.
 
-You are not just a chatbot.
 You are a personal wellness, fitness, study, habit, and lifestyle AI agent.
 
 Important safety rules:
@@ -518,8 +640,13 @@ def daily_plan(
     if not client:
         raise HTTPException(status_code=500, detail="Groq API key missing")
 
+    context = get_user_context(user, db)
+
     prompt = f"""
 Create a professional daily wellness plan for {user.full_name}.
+
+User context:
+{context}
 
 Include:
 - Morning routine
@@ -551,23 +678,13 @@ def weekly_report(
     if not client:
         raise HTTPException(status_code=500, detail="Groq API key missing")
 
-    symptoms = db.query(SymptomLog).filter(SymptomLog.user_id == user.id).all()
-    moods = db.query(MoodLog).filter(MoodLog.user_id == user.id).all()
-    sleeps = db.query(SleepLog).filter(SleepLog.user_id == user.id).all()
-    waters = db.query(WaterLog).filter(WaterLog.user_id == user.id).all()
-
-    data = f"""
-Symptoms: {[s.symptom for s in symptoms]}
-Moods: {[m.mood for m in moods]}
-Sleep hours: {[s.hours for s in sleeps]}
-Water glasses: {[w.glasses for w in waters]}
-"""
+    context = get_user_context(user, db)
 
     prompt = f"""
 Create a weekly wellness report for {user.full_name}.
 
-Data:
-{data}
+User data:
+{context}
 
 Include:
 - Summary
@@ -587,3 +704,329 @@ Include:
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/profile/generate")
+def generate_profile(
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    if not client:
+        raise HTTPException(status_code=500, detail="Groq API key missing")
+
+    context = get_user_context(user, db)
+
+    prompt = f"""
+You are building a personal AI lifestyle profile for this user.
+
+User name: {user.full_name}
+
+Analyze the saved user data below and create a clear profile.
+
+Data:
+{context}
+
+Return exactly in this format:
+
+Workout Style:
+...
+
+Stress Profile:
+...
+
+Sleep Pattern:
+...
+
+Study Weakness:
+...
+
+Medication Reminder Summary:
+...
+
+Weekly Goals:
+...
+
+AI Summary:
+...
+"""
+
+    try:
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}]
+        )
+
+        text = response.choices[0].message.content
+
+        profile = db.query(UserProfile).filter(UserProfile.user_id == user.id).first()
+
+        if not profile:
+            profile = UserProfile(user_id=user.id)
+            db.add(profile)
+
+        profile.workout_style = extract_section(text, "Workout Style:", "Stress Profile:")
+        profile.stress_profile = extract_section(text, "Stress Profile:", "Sleep Pattern:")
+        profile.sleep_pattern = extract_section(text, "Sleep Pattern:", "Study Weakness:")
+        profile.study_weakness = extract_section(text, "Study Weakness:", "Medication Reminder Summary:")
+        profile.medication_summary = extract_section(text, "Medication Reminder Summary:", "Weekly Goals:")
+        profile.weekly_goals = extract_section(text, "Weekly Goals:", "AI Summary:")
+        profile.ai_summary = extract_section(text, "AI Summary:", None)
+        profile.updated_at = datetime.utcnow()
+
+        db.commit()
+
+        return {
+            "message": "AI profile generated",
+            "profile": {
+                "workout_style": profile.workout_style,
+                "stress_profile": profile.stress_profile,
+                "sleep_pattern": profile.sleep_pattern,
+                "study_weakness": profile.study_weakness,
+                "medication_summary": profile.medication_summary,
+                "weekly_goals": profile.weekly_goals,
+                "ai_summary": profile.ai_summary
+            }
+        }
+
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/profile")
+def get_profile(
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    profile = db.query(UserProfile).filter(UserProfile.user_id == user.id).first()
+
+    if not profile:
+        return {
+            "message": "No profile yet. Generate profile first.",
+            "profile": None
+        }
+
+    return {
+        "workout_style": profile.workout_style,
+        "stress_profile": profile.stress_profile,
+        "sleep_pattern": profile.sleep_pattern,
+        "study_weakness": profile.study_weakness,
+        "medication_summary": profile.medication_summary,
+        "weekly_goals": profile.weekly_goals,
+        "ai_summary": profile.ai_summary,
+        "updated_at": profile.updated_at
+    }
+
+
+@app.get("/command-center")
+def command_center(
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    if not client:
+        raise HTTPException(status_code=500, detail="Groq API key missing")
+
+    body_score = calculate_body_score(db, user)
+    mind_score = calculate_mind_score(db, user)
+
+    profile = db.query(UserProfile).filter(UserProfile.user_id == user.id).first()
+    context = get_user_context(user, db)
+
+    profile_text = ""
+
+    if profile:
+        profile_text = f"""
+Workout Style: {profile.workout_style}
+Stress Profile: {profile.stress_profile}
+Sleep Pattern: {profile.sleep_pattern}
+Study Weakness: {profile.study_weakness}
+Medication Summary: {profile.medication_summary}
+Weekly Goals: {profile.weekly_goals}
+AI Summary: {profile.ai_summary}
+"""
+
+    prompt = f"""
+Create today's Daily Command Center for {user.full_name}.
+
+Body Score: {body_score}/100
+Mind Score: {mind_score}/100
+
+User Profile:
+{profile_text}
+
+User Data:
+{context}
+
+Return exactly this format:
+
+Today's Body Score:
+{body_score}/100 - short explanation
+
+Today's Mind Score:
+{mind_score}/100 - short explanation
+
+Workout Recommendation:
+...
+
+Study Recommendation:
+...
+
+Risk Warning:
+...
+
+One Small Habit:
+...
+"""
+
+    try:
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}]
+        )
+
+        return {
+            "body_score": body_score,
+            "mind_score": mind_score,
+            "command_center": response.choices[0].message.content
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/accountability-questions")
+def accountability_questions():
+    return {
+        "questions": [
+            "Did you drink enough water today?",
+            "Did you study today?",
+            "Did you work out today?",
+            "How was your mood today?",
+            "How was your sleep last night?"
+        ]
+    }
+
+
+@app.post("/accountability")
+def save_accountability(
+    req: AccountabilityRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    log = AccountabilityLog(
+        user_id=user.id,
+        drank_water=req.drank_water,
+        studied=req.studied,
+        worked_out=req.worked_out,
+        mood=req.mood,
+        sleep=req.sleep,
+        note=req.note
+    )
+
+    db.add(log)
+    db.commit()
+
+    return {"message": "Accountability check-in saved"}
+
+
+@app.get("/accountability-history")
+def accountability_history(
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    logs = (
+        db.query(AccountabilityLog)
+        .filter(AccountabilityLog.user_id == user.id)
+        .order_by(AccountabilityLog.id.desc())
+        .limit(30)
+        .all()
+    )
+
+    return logs
+
+
+@app.get("/patterns")
+def detect_patterns(
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    if not client:
+        raise HTTPException(status_code=500, detail="Groq API key missing")
+
+    moods = db.query(MoodLog).filter(MoodLog.user_id == user.id).all()
+    sleeps = db.query(SleepLog).filter(SleepLog.user_id == user.id).all()
+    accountability = db.query(AccountabilityLog).filter(AccountabilityLog.user_id == user.id).all()
+
+    rule_patterns = []
+
+    if moods and sleeps:
+        high_stress_count = len([m for m in moods if m.stress_level >= 7])
+        low_sleep_count = len([s for s in sleeps if s.hours < 6])
+
+        if high_stress_count > 0 and low_sleep_count > 0:
+            rule_patterns.append("Your stress seems higher when your sleep is below 6 hours.")
+
+    workout_yes = [
+        a for a in accountability
+        if a.worked_out and a.worked_out.lower() in ["yes", "y", "done"]
+    ]
+
+    workout_no = [
+        a for a in accountability
+        if a.worked_out and a.worked_out.lower() in ["no", "n", "missed"]
+    ]
+
+    if len(workout_no) > len(workout_yes):
+        rule_patterns.append("Your workout consistency may be low. You may need smaller, easier workout goals.")
+
+    studied_yes = [
+        a for a in accountability
+        if a.studied and a.studied.lower() in ["yes", "y", "done"]
+    ]
+
+    if len(studied_yes) >= 3:
+        rule_patterns.append("You show a positive study pattern when you check in consistently.")
+
+    context = get_user_context(user, db)
+
+    prompt = f"""
+You are a pattern detection AI for a wellness and productivity app.
+
+Find practical patterns from this user's data.
+
+User data:
+{context}
+
+Rule-based patterns:
+{rule_patterns}
+
+Return:
+1. Top Patterns
+2. Possible Causes
+3. What To Improve
+4. One Smart Recommendation
+
+Do not diagnose medical conditions.
+Keep it practical and safe.
+"""
+
+    try:
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}]
+        )
+
+        return {
+            "rule_patterns": rule_patterns,
+            "ai_patterns": response.choices[0].message.content
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/dev-reset-db")
+def dev_reset_db():
+    Base.metadata.drop_all(bind=engine)
+    Base.metadata.create_all(bind=engine)
+    return {"message": "Database reset successfully"}

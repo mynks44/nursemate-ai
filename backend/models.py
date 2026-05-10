@@ -98,3 +98,35 @@ class WaterLog(Base):
     user_id = Column(Integer, ForeignKey("users.id"))
     glasses = Column(Integer)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+class UserProfile(Base):
+    __tablename__ = "user_profiles"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+
+    workout_style = Column(Text, default="")
+    stress_profile = Column(Text, default="")
+    sleep_pattern = Column(Text, default="")
+    study_weakness = Column(Text, default="")
+    medication_summary = Column(Text, default="")
+    weekly_goals = Column(Text, default="")
+    ai_summary = Column(Text, default="")
+
+    updated_at = Column(DateTime, default=datetime.utcnow)
+
+
+class AccountabilityLog(Base):
+    __tablename__ = "accountability_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+
+    drank_water = Column(String)
+    studied = Column(String)
+    worked_out = Column(String)
+    mood = Column(String)
+    sleep = Column(String)
+    note = Column(Text)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
