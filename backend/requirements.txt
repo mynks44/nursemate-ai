@@ -3,7 +3,7 @@ uvicorn
 groq
 sqlalchemy
 passlib
-bcrypt
+bcrypt==4.0.1
 python-jose
 pydantic
 python-dotenv

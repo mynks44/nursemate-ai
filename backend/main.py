@@ -132,21 +132,29 @@ def debug_env():
 
 @app.post("/register")
 def register(req: RegisterRequest, db: Session = Depends(get_db)):
-    existing = db.query(User).filter(User.email == req.email).first()
+    try:
+        existing = db.query(User).filter(User.email == req.email).first()
 
-    if existing:
-        raise HTTPException(status_code=400, detail="Email already exists")
+        if existing:
+            raise HTTPException(status_code=400, detail="Email already exists")
 
-    user = User(
-        full_name=req.full_name,
-        email=req.email,
-        password=hash_password(req.password)
-    )
+        user = User(
+            full_name=req.full_name,
+            email=req.email,
+            password=hash_password(req.password)
+        )
 
-    db.add(user)
-    db.commit()
+        db.add(user)
+        db.commit()
 
-    return {"message": "Account created successfully"}
+        return {"message": "Account created successfully"}
+
+    except HTTPException:
+        raise
+
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/login")
