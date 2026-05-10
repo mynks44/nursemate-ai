@@ -38,11 +38,15 @@ app = FastAPI(title="NurseMate AI Pro")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:5173",
+        "https://nursemate-ai.vercel.app"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 api_key = os.getenv("GROQ_API_KEY")
 
