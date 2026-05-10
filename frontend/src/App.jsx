@@ -16,7 +16,7 @@ import {
 } from "lucide-react";
 import "./App.css";
 
-const API = "https://YOUR-RAILWAY-URL.up.railway.app";
+const API = "https://nursemate-ai-production.up.railway.app";
 
 function App() {
   const [page, setPage] = useState("login");
