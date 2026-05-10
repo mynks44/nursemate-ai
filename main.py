@@ -1,18 +1,16 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-import google.generativeai as genai
+from groq import Groq
 import os
 
 app = FastAPI()
 
-api_key = os.getenv("GEMINI_API_KEY")
+api_key = os.getenv("GROQ_API_KEY")
 
 if api_key:
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel("gemini-1.5-flash-8b")
-    # model = genai.GenerativeModel("gemini-2.0-flash")
+    client = Groq(api_key=api_key)
 else:
-    model = None
+    client = None
 
 memory = []
 
@@ -22,17 +20,17 @@ class ChatRequest(BaseModel):
 @app.get("/")
 def home():
     return {
-        "status": "NurseMate AI Running with Gemini"
+        "status": "NurseMate AI running with Groq"
     }
 
 @app.get("/debug-env")
 def debug():
     return {
-        "has_gemini_key": bool(api_key)
+        "has_groq_key": bool(api_key)
     }
 
 @app.post("/save")
-def save_note(req: ChatRequest):
+def save(req: ChatRequest):
     memory.append(req.message)
 
     return {
@@ -42,10 +40,10 @@ def save_note(req: ChatRequest):
 @app.post("/chat")
 def chat(req: ChatRequest):
 
-    if not model:
+    if not client:
         raise HTTPException(
             status_code=500,
-            detail="Gemini API key missing"
+            detail="Groq API key missing"
         )
 
     saved_data = "\n".join(memory)
@@ -55,8 +53,8 @@ You are NurseMate AI.
 
 Rules:
 - Give general wellness guidance only
-- Never diagnose disease
-- Recommend doctor/emergency services for serious symptoms
+- Never diagnose diseases
+- Tell user to contact emergency services for serious symptoms
 
 Saved notes:
 {saved_data}
@@ -66,10 +64,20 @@ User:
 """
 
     try:
-        response = model.generate_content(prompt)
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ]
+        )
+
+        reply = response.choices[0].message.content
 
         return {
-            "reply": response.text
+            "reply": reply
         }
 
     except Exception as e:
