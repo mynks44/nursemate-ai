@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from groq import Groq
+from dotenv import load_dotenv
 import os
 
 from database import Base, engine, SessionLocal
@@ -32,29 +33,36 @@ from schemas import (
 )
 from auth import hash_password, verify_password, create_token, verify_token
 
+
+# Load local .env file
+load_dotenv()
+
+# Create database tables
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="NurseMate AI Pro")
 
+
+# ✅ Correct CORS for Vercel + localhost
+# For now, this is fully open because your app uses token auth, not cookies.
+# This fixes: No Access-Control-Allow-Origin header.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "https://nursemate-ai.vercel.app"
-    ],
-    allow_origin_regex=r"https://.*\.vercel\.app",
+    allow_origins=["*"],
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+
+# Groq setup
 api_key = os.getenv("GROQ_API_KEY")
 
 if api_key:
     client = Groq(api_key=api_key)
 else:
     client = None
+
 
 EMERGENCY_WORDS = [
     "chest pain",
@@ -70,12 +78,14 @@ EMERGENCY_WORDS = [
     "seizure"
 ]
 
+
 def get_db():
     db = SessionLocal()
     try:
         yield db
     finally:
         db.close()
+
 
 def get_current_user(
     authorization: str = Header(None),
@@ -84,7 +94,10 @@ def get_current_user(
     if not authorization:
         raise HTTPException(status_code=401, detail="Missing token")
 
-    token = authorization.replace("Bearer ", "")
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Invalid authorization format")
+
+    token = authorization.replace("Bearer ", "").strip()
     payload = verify_token(token)
 
     if not payload:
@@ -97,13 +110,25 @@ def get_current_user(
 
     return user
 
+
 @app.get("/")
 def home():
     return {"status": "NurseMate AI Pro running"}
 
+
+@app.get("/version")
+def version():
+    return {
+        "version": "cors-fixed-v3",
+        "cors": "enabled",
+        "backend": "backend/main.py"
+    }
+
+
 @app.get("/debug-env")
 def debug_env():
     return {"has_groq_key": bool(api_key)}
+
 
 @app.post("/register")
 def register(req: RegisterRequest, db: Session = Depends(get_db)):
@@ -123,6 +148,7 @@ def register(req: RegisterRequest, db: Session = Depends(get_db)):
 
     return {"message": "Account created successfully"}
 
+
 @app.post("/login")
 def login(req: LoginRequest, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == req.email).first()
@@ -139,6 +165,7 @@ def login(req: LoginRequest, db: Session = Depends(get_db)):
             "email": user.email
         }
     }
+
 
 @app.post("/chat")
 def chat(
@@ -168,9 +195,30 @@ def chat(
     gym_plans = db.query(GymPlan).filter(GymPlan.user_id == user.id).all()
     study_plans = db.query(StudyPlan).filter(StudyPlan.user_id == user.id).all()
     medications = db.query(MedicationReminder).filter(MedicationReminder.user_id == user.id).all()
-    symptoms = db.query(SymptomLog).filter(SymptomLog.user_id == user.id).order_by(SymptomLog.id.desc()).limit(5).all()
-    moods = db.query(MoodLog).filter(MoodLog.user_id == user.id).order_by(MoodLog.id.desc()).limit(5).all()
-    sleeps = db.query(SleepLog).filter(SleepLog.user_id == user.id).order_by(SleepLog.id.desc()).limit(5).all()
+
+    symptoms = (
+        db.query(SymptomLog)
+        .filter(SymptomLog.user_id == user.id)
+        .order_by(SymptomLog.id.desc())
+        .limit(5)
+        .all()
+    )
+
+    moods = (
+        db.query(MoodLog)
+        .filter(MoodLog.user_id == user.id)
+        .order_by(MoodLog.id.desc())
+        .limit(5)
+        .all()
+    )
+
+    sleeps = (
+        db.query(SleepLog)
+        .filter(SleepLog.user_id == user.id)
+        .order_by(SleepLog.id.desc())
+        .limit(5)
+        .all()
+    )
 
     context = ""
 
@@ -184,13 +232,23 @@ def chat(
         context += f"Study Plan - {item.subject}, Goal: {item.goal}, Plan: {item.plan}\n"
 
     for item in medications:
-        context += f"Medication - {item.medicine_name}, Dosage: {item.dosage}, Time: {item.reminder_time}, Note: {item.note}\n"
+        context += (
+            f"Medication - {item.medicine_name}, "
+            f"Dosage: {item.dosage}, "
+            f"Time: {item.reminder_time}, "
+            f"Note: {item.note}\n"
+        )
 
     for item in symptoms:
         context += f"Recent Symptom - {item.symptom}, Severity: {item.severity}, Note: {item.note}\n"
 
     for item in moods:
-        context += f"Recent Mood - {item.mood}, Energy: {item.energy_level}, Stress: {item.stress_level}, Note: {item.note}\n"
+        context += (
+            f"Recent Mood - {item.mood}, "
+            f"Energy: {item.energy_level}, "
+            f"Stress: {item.stress_level}, "
+            f"Note: {item.note}\n"
+        )
 
     for item in sleeps:
         context += f"Recent Sleep - {item.hours} hours, Quality: {item.quality}, Note: {item.note}\n"
@@ -245,12 +303,19 @@ Use headings and simple steps.
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @app.get("/chat-history")
 def chat_history(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    return db.query(ChatMessage).filter(ChatMessage.user_id == user.id).order_by(ChatMessage.id.asc()).all()
+    return (
+        db.query(ChatMessage)
+        .filter(ChatMessage.user_id == user.id)
+        .order_by(ChatMessage.id.asc())
+        .all()
+    )
+
 
 @app.post("/memory")
 def save_memory(
@@ -263,6 +328,7 @@ def save_memory(
     db.commit()
     return {"message": "Memory saved"}
 
+
 @app.get("/memories")
 def get_memories(
     user: User = Depends(get_current_user),
@@ -270,16 +336,25 @@ def get_memories(
 ):
     return db.query(Memory).filter(Memory.user_id == user.id).all()
 
+
 @app.post("/gym-plan")
 def save_gym_plan(
     req: GymPlanRequest,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    item = GymPlan(user_id=user.id, title=req.title, goal=req.goal, plan=req.plan)
+    item = GymPlan(
+        user_id=user.id,
+        title=req.title,
+        goal=req.goal,
+        plan=req.plan
+    )
+
     db.add(item)
     db.commit()
+
     return {"message": "Gym plan saved"}
+
 
 @app.get("/gym-plans")
 def get_gym_plans(
@@ -288,16 +363,25 @@ def get_gym_plans(
 ):
     return db.query(GymPlan).filter(GymPlan.user_id == user.id).all()
 
+
 @app.post("/study-plan")
 def save_study_plan(
     req: StudyPlanRequest,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    item = StudyPlan(user_id=user.id, subject=req.subject, goal=req.goal, plan=req.plan)
+    item = StudyPlan(
+        user_id=user.id,
+        subject=req.subject,
+        goal=req.goal,
+        plan=req.plan
+    )
+
     db.add(item)
     db.commit()
+
     return {"message": "Study plan saved"}
+
 
 @app.get("/study-plans")
 def get_study_plans(
@@ -305,6 +389,7 @@ def get_study_plans(
     db: Session = Depends(get_db)
 ):
     return db.query(StudyPlan).filter(StudyPlan.user_id == user.id).all()
+
 
 @app.post("/medication")
 def save_medication(
@@ -319,9 +404,12 @@ def save_medication(
         reminder_time=req.reminder_time,
         note=req.note
     )
+
     db.add(item)
     db.commit()
+
     return {"message": "Medication reminder saved"}
+
 
 @app.get("/medications")
 def get_medications(
@@ -329,6 +417,7 @@ def get_medications(
     db: Session = Depends(get_db)
 ):
     return db.query(MedicationReminder).filter(MedicationReminder.user_id == user.id).all()
+
 
 @app.post("/symptom")
 def save_symptom(
@@ -342,9 +431,12 @@ def save_symptom(
         severity=req.severity,
         note=req.note
     )
+
     db.add(item)
     db.commit()
+
     return {"message": "Symptom logged"}
+
 
 @app.get("/symptoms")
 def get_symptoms(
@@ -352,6 +444,7 @@ def get_symptoms(
     db: Session = Depends(get_db)
 ):
     return db.query(SymptomLog).filter(SymptomLog.user_id == user.id).all()
+
 
 @app.post("/mood")
 def save_mood(
@@ -366,9 +459,12 @@ def save_mood(
         stress_level=req.stress_level,
         note=req.note
     )
+
     db.add(item)
     db.commit()
+
     return {"message": "Mood logged"}
+
 
 @app.post("/sleep")
 def save_sleep(
@@ -382,9 +478,12 @@ def save_sleep(
         quality=req.quality,
         note=req.note
     )
+
     db.add(item)
     db.commit()
+
     return {"message": "Sleep logged"}
+
 
 @app.post("/water")
 def save_water(
@@ -392,10 +491,16 @@ def save_water(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    item = WaterLog(user_id=user.id, glasses=req.glasses)
+    item = WaterLog(
+        user_id=user.id,
+        glasses=req.glasses
+    )
+
     db.add(item)
     db.commit()
+
     return {"message": "Water intake logged"}
+
 
 @app.get("/daily-plan")
 def daily_plan(
@@ -418,18 +523,26 @@ Include:
 - Safe reminder that this is general wellness guidance
 """
 
-    response = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
-        messages=[{"role": "user", "content": prompt}]
-    )
+    try:
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}]
+        )
 
-    return {"plan": response.choices[0].message.content}
+        return {"plan": response.choices[0].message.content}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.get("/weekly-report")
 def weekly_report(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    if not client:
+        raise HTTPException(status_code=500, detail="Groq API key missing")
+
     symptoms = db.query(SymptomLog).filter(SymptomLog.user_id == user.id).all()
     moods = db.query(MoodLog).filter(MoodLog.user_id == user.id).all()
     sleeps = db.query(SleepLog).filter(SleepLog.user_id == user.id).all()
@@ -456,9 +569,13 @@ Include:
 - Reminder to consult a healthcare professional for medical concerns
 """
 
-    response = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
-        messages=[{"role": "user", "content": prompt}]
-    )
+    try:
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}]
+        )
 
-    return {"report": response.choices[0].message.content}
+        return {"report": response.choices[0].message.content}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
