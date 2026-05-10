@@ -1,16 +1,17 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from openai import OpenAI
+import google.generativeai as genai
 import os
 
 app = FastAPI()
 
-api_key = os.getenv("OPENAI_API_KEY")
+api_key = os.getenv("GEMINI_API_KEY")
 
 if api_key:
-    client = OpenAI(api_key=api_key)
+    genai.configure(api_key=api_key)
+    model = genai.GenerativeModel("gemini-1.5-flash")
 else:
-    client = None
+    model = None
 
 memory = []
 
@@ -19,44 +20,59 @@ class ChatRequest(BaseModel):
 
 @app.get("/")
 def home():
-    return {"status": "NurseMate AI Running"}
+    return {
+        "status": "NurseMate AI Running with Gemini"
+    }
 
 @app.get("/debug-env")
-def debug_env():
-    return {"has_openai_key": bool(os.getenv("OPENAI_API_KEY"))}
+def debug():
+    return {
+        "has_gemini_key": bool(api_key)
+    }
 
 @app.post("/save")
 def save_note(req: ChatRequest):
     memory.append(req.message)
-    return {"saved": req.message}
+
+    return {
+        "saved": req.message
+    }
 
 @app.post("/chat")
 def chat(req: ChatRequest):
-    if not client:
-        raise HTTPException(status_code=500, detail="OPENAI_API_KEY is missing in Railway Variables")
+
+    if not model:
+        raise HTTPException(
+            status_code=500,
+            detail="Gemini API key missing"
+        )
 
     saved_data = "\n".join(memory)
 
-    try:
-        response = client.responses.create(
-            model="gpt-4.1-mini",
-            input=f"""
+    prompt = f"""
 You are NurseMate AI.
 
 Rules:
-- Give general wellness guidance only.
-- Never diagnose.
-- If emergency symptoms appear, tell user to contact emergency services.
+- Give general wellness guidance only
+- Never diagnose disease
+- Recommend doctor/emergency services for serious symptoms
 
 Saved notes:
 {saved_data}
 
-User says:
+User:
 {req.message}
 """
-        )
 
-        return {"reply": response.output_text}
+    try:
+        response = model.generate_content(prompt)
+
+        return {
+            "reply": response.text
+        }
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(
+            status_code=500,
+            detail=str(e)
+        )
